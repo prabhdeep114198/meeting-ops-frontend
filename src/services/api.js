@@ -198,5 +198,103 @@ export const apiService = {
 
   getOpsMetrics() {
     return getStorage('ops_metrics', OPS_METRICS);
+  },
+
+  // -------------------------------------------------------------
+  // Phase 2 (Week 3): Automated Bot Capture & Consent APIs
+  // -------------------------------------------------------------
+  async dispatchBot(data) {
+    try {
+      const res = await fetch('/api/v1/capture/manual-bot-join', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (e) {
+      console.warn('capture-service offline, running simulated bot join flow', e);
+    }
+
+    // Fallback simulation conforming to FR-1.1, FR-1.3, FR-1.4
+    const policy = getStorage('consent_policy', 'NOTIFY_ONLY');
+    const isDeclined = data.attendees && data.attendees.some(a => a.consentStatus === 'DECLINED');
+
+    if (policy === 'PARTICIPANT_OPT_IN' && isDeclined) {
+      return {
+        captureJobId: `cap-${Date.now()}`,
+        meetingId: `m-${Date.now()}`,
+        status: 'ABORTED_NO_CONSENT',
+        platform: data.platform || 'MEET',
+        meetingUrl: data.meetingUrl,
+        consentEvaluation: {
+          allowed: false,
+          consentPolicy: policy,
+          reason: 'Policy is PARTICIPANT_OPT_IN: Missing or declined consent detected (PRIV-2). Bot join aborted.'
+        },
+        message: 'ABORTED: Attendee declined recording consent.'
+      };
+    }
+
+    return {
+      captureJobId: `cap-${Date.now()}`,
+      meetingId: `m-${Date.now()}`,
+      status: 'JOINING',
+      platform: data.platform || 'MEET',
+      meetingUrl: data.meetingUrl,
+      consentEvaluation: {
+        allowed: true,
+        consentPolicy: policy,
+        reason: 'Consent verified. Pre-join validation satisfied.'
+      },
+      message: 'Bot dispatched to conference call. In-meeting recording notice broadcasted.'
+    };
+  },
+
+  async getCaptureStatus(meetingId) {
+    try {
+      const res = await fetch(`/api/v1/capture/status/${meetingId}`);
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (e) {}
+
+    return {
+      meetingId,
+      status: 'RECORDING',
+      botDisplayName: 'MeetingOps Recording Bot (AI Analysis)',
+      chatNoticeSent: true,
+      audioS3Uri: `s3://meeting-audio-recordings/org-default/${meetingId}.wav`,
+      excludedAttendees: []
+    };
+  },
+
+  async setConsentPolicy(policy) {
+    setStorage('consent_policy', policy);
+    try {
+      await fetch('/api/v1/consent/policy?org_id=org-default&policy=' + policy, {
+        method: 'PUT'
+      });
+    } catch (e) {}
+    return { status: 'SUCCESS', consentPolicy: policy };
+  },
+
+  getConsentPolicy() {
+    return getStorage('consent_policy', 'NOTIFY_ONLY');
+  },
+
+  async optOutParticipant(meetingId, participantEmail) {
+    try {
+      const res = await fetch('/api/v1/capture/opt-out', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ meetingId, participantEmail, excludeAnalytics: true })
+      });
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (e) {}
+    return { meetingId, participantEmail, status: 'OPTED_OUT' };
   }
 };
